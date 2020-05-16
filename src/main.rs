@@ -13,24 +13,40 @@ enum States {
     Stop,
 }
 
+fn next_state(s: States) -> States {
+    return match s {
+        States::Following => States::SearchLeft,
+        States::SearchLeft => States::SearchRight,
+        States::SearchRight => States::SearchLeft,
+        s => s,
+    };
+}
+
 fn on_line(sen: &ColorSensor) -> bool {
     let val = sen.get_value0();
 
-    let r = match val {
-        Ok(v) => v < 20,
+    let v = match val {
+        Ok(v) => v,
         Err(_) => panic!("problem reading color sensor"),
     };
+    println!("sensor value: {}", v);
 
-    return r;
+    return v > 20;
 }
 
 fn main() -> Ev3Result<()> {
+    println!("running");
+
     // Get large motor on port outA.
     let left_motor = LargeMotor::get(MotorPort::OutB)?;
     let right_motor = LargeMotor::get(MotorPort::OutC)?;
 
+    println!("got motors");
+
     let forward_speed = -50;
-    let search_speed = -15;
+    let search_speed = -30;
+    let search_degs = [1, 3, 6, 12];
+    let timeout = Duration::from_millis(250);
 
     // Set command "run-direct".
     left_motor.run_direct()?;
@@ -38,12 +54,12 @@ fn main() -> Ev3Result<()> {
 
     // Find color sensor. Always returns the first recognised one.
     let color_sensor = ColorSensor::find()?;
+    println!("got sensor");
 
     // Switch to reflect mode.
     color_sensor.set_mode_col_reflect()?;
 
-    let timeout = Duration::from_millis(500);
-    let mut state = (States::Following, 0);
+    let mut state = (States::Following, 0, 0);
 
     let go = |l, r| {
         let _r = match left_motor.set_duty_cycle_sp(l) {
@@ -74,28 +90,35 @@ fn main() -> Ev3Result<()> {
     };
 
     loop {
-        let next_state = match on_line(&color_sensor) {
-            true => (States::Following, 0),
+        state = match on_line(&color_sensor) {
+            true => (States::Following, 0, 0),
             false => match state {
-                (States::Following, _) => (States::SearchLeft, 0),
-                (States::SearchLeft, 6) => (States::SearchRight, 0),
-                (States::SearchRight, 6) => (States::Stop, 0),
-                (s, l) => (s, l + 1),
+                (States::Following, _, _) => (States::SearchLeft, 0, 0),
+                (s, times, index) => {
+                    if times == search_degs[index] {
+                        if index + 1 == search_degs.len() {
+                            (States::Stop, 0, 0)
+                        } else {
+                            (next_state(s), 0, index + 1)
+                        }
+                    } else {
+                        (s, times + 1, index)
+                    }
+                }
             },
         };
 
-        state = next_state;
-
         match state {
-            (States::Following, _) => go_forward(),
-            (States::SearchLeft, _) => go_left(),
-            (States::SearchRight, _) => go_right(),
-            (States::Stop, _) => break,
+            (States::Following, _, _) => go_forward(),
+            (States::SearchLeft, _, _) => go_left(),
+            (States::SearchRight, _, _) => go_right(),
+            (States::Stop, _, _) => break,
         }
 
         thread::sleep(timeout);
     }
 
+    println!("Stopping");
     go_stop();
     Ok(())
 }
